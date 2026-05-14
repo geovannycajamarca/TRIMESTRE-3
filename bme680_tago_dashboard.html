@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>BME680 · ESP32 Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:        #080c10;
+      --panel:     #0d1117;
+      --border:    #1c2a38;
+      --accent1:   #00e5ff;   /* temperatura – cyan  */
+      --accent2:   #39ff14;   /* humedad     – lime  */
+      --accent3:   #ff9800;   /* presión     – amber */
+      --accent4:   #e040fb;   /* gas VOC     – violet*/
+      --accent5:   #29b6f6;   /* altitud     – sky   */
+      --text:      #cfd8e3;
+      --dim:       #4a6075;
+      --glow:      0 0 12px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Rajdhani', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    /* ── scanline overlay ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 3px,
+        rgba(0,0,0,.08) 3px,
+        rgba(0,0,0,.08) 4px
+      );
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    /* ── header ── */
+    header {
+      width: 100%; max-width: 900px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 14px; margin-bottom: 28px;
+    }
+    .logo-block { display: flex; align-items: center; gap: 12px; }
+    .logo-icon {
+      width: 40px; height: 40px;
+      border: 2px solid var(--accent1);
+      border-radius: 8px;
+      display: grid; place-items: center;
+      box-shadow: var(--glow) var(--accent1);
+      animation: pulse-border 3s ease-in-out infinite;
+    }
+    @keyframes pulse-border {
+      0%,100% { box-shadow: 0 0 8px var(--accent1); }
+      50%      { box-shadow: 0 0 22px var(--accent1); }
+    }
+    .logo-icon svg { width: 22px; height: 22px; fill: var(--accent1); }
+    h1 {
+      font-size: 1.6rem; font-weight: 700; letter-spacing: .12em;
+      color: #fff; text-transform: uppercase;
+    }
+    h1 span { color: var(--accent1); }
+    .live-badge {
+      display: flex; align-items: center; gap: 6px;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .75rem; color: var(--accent2);
+      border: 1px solid var(--accent2);
+      padding: 4px 10px; border-radius: 4px;
+      box-shadow: var(--glow) var(--accent2);
+    }
+    .live-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent2);
+      animation: blink 1.2s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── timestamp ── */
+    .timestamp {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .78rem; color: var(--dim);
+      text-align: right; width: 100%; max-width: 900px;
+      margin-bottom: 18px;
+    }
+    #ts { color: var(--text); }
+
+    /* ── grid ── */
+    .grid {
+      width: 100%; max-width: 900px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 18px;
+    }
+
+    /* ── sensor card ── */
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 20px 18px;
+      position: relative;
+      overflow: hidden;
+      transition: transform .2s;
+    }
+    .card:hover { transform: translateY(-3px); }
+    .card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: var(--c);
+      box-shadow: 0 0 14px var(--c);
+    }
+    .card::after {
+      content: '';
+      position: absolute; bottom: -40px; right: -40px;
+      width: 130px; height: 130px; border-radius: 50%;
+      background: radial-gradient(circle, var(--c) 0%, transparent 70%);
+      opacity: .06;
+    }
+
+    .card-label {
+      font-size: .7rem; letter-spacing: .18em; text-transform: uppercase;
+      color: var(--dim); margin-bottom: 6px;
+      display: flex; align-items: center; gap: 7px;
+    }
+    .card-label svg { width: 13px; height: 13px; fill: var(--c); }
+
+    .card-value {
+      font-family: 'Share Tech Mono', monospace;
+      font-size: 2.4rem; font-weight: 400; line-height: 1;
+      color: var(--c);
+      text-shadow: var(--glow) var(--c);
+      margin-bottom: 4px;
+      transition: color .3s;
+    }
+    .card-unit {
+      font-size: .85rem; color: var(--dim); letter-spacing: .06em;
+    }
+
+    /* bar */
+    .bar-track {
+      margin-top: 14px; height: 4px; background: var(--border); border-radius: 2px;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 2px;
+      background: var(--c);
+      box-shadow: 0 0 6px var(--c);
+      transition: width .8s cubic-bezier(.4,0,.2,1);
+    }
+    .bar-range {
+      display: flex; justify-content: space-between;
+      font-family: 'Share Tech Mono', monospace;
+      font-size: .62rem; color: var(--dim);
+      margin-top: 5px;
+    }
+
+    /* ── mini chart canvas ── */
+    .chart-wrap {
+      margin-top: 14px; height: 50px; position: relative;
+    }
+    canvas { width: 100% !important; height: 100% !important; }
+
+    /* ── status footer ── */
+    .status-bar {
+      width: 100%; max-width: 900px;
+      margin-top: 26px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      padding: 14px 20px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .status-item {
+      display: flex; align-items: center; gap: 8px;
+      font-size: .82rem; color: var(--dim);
+    }
+    .status-item strong { color: var(--text); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent2); }
+
+    /* ── iaq badge ── */
+    #iaq-badge {
+      padding: 6px 14px; border-radius: 6px;
+      font-size: .82rem; font-weight: 700; letter-spacing: .1em;
+      border: 1px solid;
+      transition: all .5s;
+    }
+
+    /* ── flash animation on update ── */
+    @keyframes flash {
+      0%   { background: rgba(255,255,255,.07); }
+      100% { background: transparent; }
+    }
+    .flash { animation: flash .4s ease-out; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-block">
+    <div class="logo-icon">
+      <!-- chip icon -->
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M9 2H15V4H17V2H19V6H22V9H20V15H22V17H19V19H22V21H17V22H15V20H9V22H7V19H2V17H5V15H2V9H5V7H2V5H7V2H9ZM7 7H5V9H7V7ZM7 15H5V17H7V15ZM17 7H19V9H17V7ZM17 15H19V17H17V15ZM9 6V18H15V6H9Z"/>
+      </svg>
+    </div>
+    <h1>BME<span>680</span> · ESP32</h1>
+  </div>
+  <div class="live-badge"><span class="live-dot"></span>LIVE</div>
+</header>
+
+<div class="timestamp">Última lectura: <span id="ts">—</span></div>
+
+<div class="grid">
+
+  <!-- TEMPERATURA -->
+  <div class="card" style="--c:var(--accent1)">
+    <div class="card-label">
+      <svg viewBox="0 0 24 24"><path d="M12 2C10.34 2 9 3.34 9 5V13.26C7.79 14.13 7 15.47 7 17C7 19.76 9.24 22 12 22S17 19.76 17 17C17 15.47 16.21 14.13 15 13.26V5C15 3.34 13.66 2 12 2ZM13 14.58V16H11V14.58C9.84 14.07 9 12.93 9 11.6V5C9 4.45 9.45 4 10 4H14C14.55 4 15 4.45 15 5V11.6C15 12.93 14.16 14.07 13 14.58Z"/></svg>
+      Temperatura
+    </div>
+    <div class="card-value" id="temp">--.-</div>
+    <div class="card-unit">°C  ·  Oversampling ×8</div>
+    <div class="bar-track"><div class="bar-fill" id="temp-bar" style="width:0%"></div></div>
+    <div class="bar-range"><span>-10°</span><span>50°</span></div>
+    <div class="chart-wrap"><canvas id="chart-temp"></canvas></div>
+  </div>
+
+  <!-- HUMEDAD -->
+  <div class="card" style="--c:var(--accent2)">
+    <div class="card-label">
+      <svg viewBox="0 0 24 24"><path d="M12 2L6 10C6 13.31 8.69 16 12 16S18 13.31 18 10L12 2Z"/></svg>
+      Humedad
+    </div>
+    <div class="card-value" id="hum">--.-</div>
+    <div class="card-unit">%  ·  Oversampling ×2</div>
+    <div class="bar-track"><div class="bar-fill" id="hum-bar" style="width:0%"></div></div>
+    <div class="bar-range"><span>0%</span><span>100%</span></div>
+    <div class="chart-wrap"><canvas id="chart-hum"></canvas></div>
+  </div>
+
+  <!-- PRESIÓN -->
+  <div class="card" style="--c:var(--accent3)">
+    <div class="card-label">
+      <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9C5 14.25 12 22 12 22S19 14.25 19 9C19 5.13 15.87 2 12 2ZM12 11.5C10.62 11.5 9.5 10.38 9.5 9S10.62 6.5 12 6.5 14.5 7.62 14.5 9 13.38 11.5 12 11.5Z"/></svg>
+      Presión
+    </div>
+    <div class="card-value" id="pres">----.-</div>
+    <div class="card-unit">hPa  ·  Oversampling ×4</div>
+    <div class="bar-track"><div class="bar-fill" id="pres-bar" style="width:0%"></div></div>
+    <div class="bar-range"><span>900</span><span>1100</span></div>
+    <div class="chart-wrap"><canvas id="chart-pres"></canvas></div>
+  </div>
+
+  <!-- ALTITUD -->
+  <div class="card" style="--c:var(--accent5)">
+    <div class="card-label">
+      <svg viewBox="0 0 24 24"><path d="M14 6L10 12H13V22H11V24H13V22H15V12H18L14 6Z"/></svg>
+      Altitud
+    </div>
+    <div class="card-value" id="alt">----</div>
+    <div class="card-unit">m s.n.m.  ·  SLP 1013.25 hPa</div>
+    <div class="bar-track"><div class="bar-fill" id="alt-bar" style="width:0%"></div></div>
+    <div class="bar-range"><span>0 m</span><span>3000 m</span></div>
+    <div class="chart-wrap"><canvas id="chart-alt"></canvas></div>
+  </div>
+
+  <!-- GAS VOC -->
+  <div class="card" style="--c:var(--accent4)" style="grid-column: span 2">
+    <div class="card-label">
+      <svg viewBox="0 0 24 24"><path d="M17 8C8 10 5.9 16.17 3.82 20.33L5.71 21.17C6.43 19.58 7.19 18.15 8 17C10.34 17 14 16 14 12C14 9 11 8 11 8S14 8 17 8ZM22 8L18 12C18 12 19 9 17 8C21.5 8 22 12 22 12V8Z"/></svg>
+      Gas VOC (Resistencia)
+    </div>
+    <div class="card-value" id="gas">---.--</div>
+    <div class="card-unit">KΩ  ·  Heater 320°C / 150 ms  ·  IIR Filter ×3</div>
+    <div class="bar-track"><div class="bar-fill" id="gas-bar" style="width:0%"></div></div>
+    <div class="bar-range"><span>0 KΩ</span><span>500 KΩ</span></div>
+    <div class="chart-wrap"><canvas id="chart-gas"></canvas></div>
+  </div>
+
+</div>
+
+<!-- STATUS BAR -->
+<div class="status-bar">
+  <div class="status-item"><span class="dot"></span>Sensor: <strong>BME680 @ 0x76</strong></div>
+  <div class="status-item">I²C: <strong>SDA=GPIO21 · SCL=GPIO22</strong></div>
+  <div class="status-item">Muestreo: <strong>2 s</strong></div>
+  <div class="status-item">Calidad IAQ:
+    <span id="iaq-badge">—</span>
+  </div>
+</div>
+
+<script>
+// ─── CONFIGURACIÓN TAGO.IO ────────────────────────────────────────────────
+// Cambia este TOKEN por el de tu dispositivo en TagoIO
+const DEVICE_TOKEN = 'YOUR_DEVICE_TOKEN_HERE';
+const FETCH_INTERVAL_MS = 2000;  // igual al delay() del ESP32
+// Variables del dispositivo (deben coincidir con lo que envía el ESP32)
+const VAR_TEMP  = 'temperature';
+const VAR_HUM   = 'humidity';
+const VAR_PRES  = 'pressure';
+const VAR_ALT   = 'altitude';
+const VAR_GAS   = 'gas_resistance';
+// ─────────────────────────────────────────────────────────────────────────
+
+const API_BASE = 'https://api.tago.io/data';
+const HIST = { temp:[], hum:[], pres:[], alt:[], gas:[] };
+const MAX_PTS = 40;
+
+// ── mini sparkline ──────────────────────────────────────────────────────
+function drawSparkline(canvasId, data, color) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth, H = canvas.offsetHeight;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  if (data.length < 2) return;
+  const mn = Math.min(...data), mx = Math.max(...data);
+  const range = mx - mn || 1;
+  const pts = data.map((v,i) => [
+    (i / (data.length - 1)) * W,
+    H - ((v - mn) / range) * (H - 4) - 2
+  ]);
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) {
+    const mx2 = (pts[i-1][0] + pts[i][0]) / 2;
+    ctx.bezierCurveTo(mx2, pts[i-1][1], mx2, pts[i][1], pts[i][0], pts[i][1]);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 4;
+  ctx.stroke();
+  // fill gradient
+  ctx.lineTo(W, H); ctx.lineTo(0, H); ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, color + '55');
+  grad.addColorStop(1, color + '00');
+  ctx.fillStyle = grad;
+  ctx.shadowBlur = 0;
+  ctx.fill();
+}
+
+// ── update card ─────────────────────────────────────────────────────────
+function updateCard(id, barId, histKey, value, min, max, decimals, color, chartId) {
+  const el = document.getElementById(id);
+  const bar = document.getElementById(barId);
+  if (!el) return;
+  el.textContent = isNaN(value) ? '--' : value.toFixed(decimals);
+  const pct = Math.min(100, Math.max(0, ((value - min) / (max - min)) * 100));
+  bar.style.width = pct + '%';
+  HIST[histKey].push(value);
+  if (HIST[histKey].length > MAX_PTS) HIST[histKey].shift();
+  drawSparkline(chartId, HIST[histKey], color);
+  // flash parent card
+  el.closest('.card').classList.remove('flash');
+  void el.closest('.card').offsetWidth;
+  el.closest('.card').classList.add('flash');
+}
+
+// ── IAQ from gas resistance ──────────────────────────────────────────────
+function updateIAQ(gasKohm) {
+  const badge = document.getElementById('iaq-badge');
+  let label, color, border;
+  if (gasKohm > 300)      { label='Excelente'; color='#39ff14'; border='#39ff14'; }
+  else if (gasKohm > 150) { label='Buena';     color='#00e5ff'; border='#00e5ff'; }
+  else if (gasKohm > 75)  { label='Moderada';  color='#ff9800'; border='#ff9800'; }
+  else if (gasKohm > 25)  { label='Pobre';     color='#ff5722'; border='#ff5722'; }
+  else                    { label='Muy mala';  color='#e040fb'; border='#e040fb'; }
+  badge.textContent = label;
+  badge.style.color  = color;
+  badge.style.borderColor = border;
+  badge.style.boxShadow = `0 0 8px ${color}`;
+}
+
+// ── fetch latest data from TagoIO ────────────────────────────────────────
+async function fetchData() {
+  const vars = [VAR_TEMP, VAR_HUM, VAR_PRES, VAR_ALT, VAR_GAS].join(',');
+  const url = `${API_BASE}?variable=${vars}&qty=1`;
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: DEVICE_TOKEN }
+    });
+    const json = await res.json();
+    if (!json.result) return;
+    const get = name => {
+      const item = json.result.find(r => r.variable === name);
+      return item ? parseFloat(item.value) : NaN;
+    };
+    const temp = get(VAR_TEMP);
+    const hum  = get(VAR_HUM);
+    const pres = get(VAR_PRES);
+    const alt  = get(VAR_ALT);
+    const gas  = get(VAR_GAS);
+    const ts = json.result[0]?.time || new Date().toISOString();
+    document.getElementById('ts').textContent =
+      new Date(ts).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' });
+    updateCard('temp', 'temp-bar', 'temp', temp,   -10, 50,   1, '#00e5ff', 'chart-temp');
+    updateCard('hum',  'hum-bar',  'hum',  hum,    0,  100,   1, '#39ff14', 'chart-hum');
+    updateCard('pres', 'pres-bar', 'pres', pres,   900,1100,  1, '#ff9800', 'chart-pres');
+    updateCard('alt',  'alt-bar',  'alt',  alt,    0,  3000,  0, '#29b6f6', 'chart-alt');
+    updateCard('gas',  'gas-bar',  'gas',  gas,    0,  500,   2, '#e040fb', 'chart-gas');
+    if (!isNaN(gas)) updateIAQ(gas);
+  } catch(e) {
+    console.error('Error TagoIO:', e);
+  }
+}
+
+// Seed with dummy data so sparklines render on load
+function seed() {
+  [22,23,22.5,23.2,22.8].forEach(v=>HIST.temp.push(v));
+  [55,56,55,57,56].forEach(v=>HIST.hum.push(v));
+  [1012,1013,1012,1011,1013].forEach(v=>HIST.pres.push(v));
+  [2500,2502,2498,2503,2500].forEach(v=>HIST.alt.push(v));
+  [120,130,125,140,135].forEach(v=>HIST.gas.push(v));
+  drawSparkline('chart-temp', HIST.temp,  '#00e5ff');
+  drawSparkline('chart-hum',  HIST.hum,   '#39ff14');
+  drawSparkline('chart-pres', HIST.pres,  '#ff9800');
+  drawSparkline('chart-alt',  HIST.alt,   '#29b6f6');
+  drawSparkline('chart-gas',  HIST.gas,   '#e040fb');
+}
+
+window.addEventListener('load', () => {
+  seed();
+  fetchData();
+  setInterval(fetchData, FETCH_INTERVAL_MS);
+});
+window.addEventListener('resize', () => {
+  drawSparkline('chart-temp', HIST.temp,  '#00e5ff');
+  drawSparkline('chart-hum',  HIST.hum,   '#39ff14');
+  drawSparkline('chart-pres', HIST.pres,  '#ff9800');
+  drawSparkline('chart-alt',  HIST.alt,   '#29b6f6');
+  drawSparkline('chart-gas',  HIST.gas,   '#e040fb');
+});
+</script>
+</body>
+</html>
